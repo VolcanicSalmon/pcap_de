@@ -24,7 +24,7 @@ plot_colored_tree <- function(treepath, root_genes = NULL) {
     
     if (length(matching_tips) > 0) {
       if (length(matching_tips) > 1) {
-        message("  Found ", length(matching_tips), " matching tips, using first one: ", matching_tips[1])
+        message(length(matching_tips), " ~ ", matching_tips[1])
         matching_tips <- matching_tips[1]
       } else {
         message("  Rooting on: ", matching_tips)
