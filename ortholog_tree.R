@@ -119,7 +119,7 @@ suppressWarnings({
       print(otherp)
       
     }, error = function(e) {
-      message("Error plotting ", basename(file), ": ", e$message)
+      message("check ", basename(file), ": ", e$message)
     })
   }
 })
