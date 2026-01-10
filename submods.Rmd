@@ -1,0 +1,807 @@
+---
+title: "cluster71113_wgcna"
+output: html_document
+date: "2026-01-10"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+library(Seurat)
+library(hdWGCNA)
+seurat_obj=readRDS("~/Library/CloudStorage/OneDrive-NorwichBioscienceInstitutes/V10_SCT.RDS")
+# Just use seurat_clusters directly
+
+seurat_subset$seurat_clusters <- as.character(seurat_subset$seurat_clusters)
+
+# Check if PCA exists
+"pca" %in% names(seurat_subset@reductions)
+
+# If PCA doesn't exist, run it
+if (!"pca" %in% names(seurat_subset@reductions)) {
+  seurat_subset <- RunPCA(seurat_subset, assay = "SCT", npcs = 50)
+}
+
+# Now run MetacellsByGroups with reduction specified
+seurat_subset <- SetupForWGCNA(
+  seurat_subset,
+  gene_select = "fraction",
+  fraction = 0.05,
+  wgcna_name = "haustorial"
+)
+
+# NOW try MetacellsByGroups
+seurat_subset <- MetacellsByGroups(
+  seurat_obj = seurat_subset,
+  group.by = 'seurat_clusters',
+  k = 25,
+  max_shared = 10,
+  ident.group = 'seurat_clusters',
+  reduction = 'pca'
+)
+```
+
+```{r}
+library(hdWGCNA)
+library(Seurat)
+library(tidyverse)
+
+# Load original object
+seurat_obj <- readRDS("~/Library/CloudStorage/OneDrive-NorwichBioscienceInstitutes/V10_SCT.RDS")
+
+# Subset to clusters 7, 11, 13
+seurat_sub <- subset(seurat_obj, seurat_clusters %in% c(7, 11, 13))
+
+cat("Cells in subset:", ncol(seurat_sub), "\n")
+
+# Clean memory
+rm(seurat_obj)
+gc()
+
+# Create grouping column BEFORE any hdWGCNA steps
+seurat_sub$haustorial_group <- "Haustorial"
+
+# Verify
+table(seurat_sub$haustorial_group)
+
+# Set default assay
+DefaultAssay(seurat_sub) <- "SCT"
+
+# Ensure we have scaled data
+if (nrow(seurat_sub@assays$SCT@scale.data) == 0) {
+  cat("Re-scaling data...\n")
+  seurat_sub <- ScaleData(seurat_sub, assay = "SCT")
+}
+
+# Step 1: Setup hdWGCNA
+seurat_sub <- SetupForWGCNA(
+  seurat_sub,
+  gene_select = "fraction",
+  fraction = 0.05,
+  wgcna_name = "haustorial"
+)
+
+# Verify setup worked
+cat("\nhdWGCNA setup complete\n")
+print(names(seurat_sub@misc))
+
+# Step 2: Create metacells
+seurat_sub <- MetacellsByGroups(
+  seurat_obj = seurat_sub,
+  group.by = 'haustorial_group',
+  k = 25,
+  max_shared = 10,
+  ident.group = 'haustorial_group',
+  reduction = 'harmony'
+)
+
+cat("\nMetacells created\n")
+
+# Step 3: Normalize metacells
+seurat_sub <- NormalizeMetacells(seurat_sub)
+
+cat("\nMetacells normalized\n")
+
+# Step 4: Set expression data
+seurat_sub <- SetDatExpr(
+  seurat_sub,
+  group_name = 'Haustorial',
+  group.by = 'haustorial_group',
+  assay = 'SCT',
+  slot = 'scale.data'
+)
+
+cat("\nExpression data set\n")
+
+# Step 5: Test soft powers
+seurat_sub <- TestSoftPowers(
+  seurat_sub,
+  networkType = 'signed'
+)
+library(patchwork)
+# Step 6: Plot
+plots <- PlotSoftPowers(seurat_sub)
+wrap_plots(plots, ncol = 2)
+
+# Step 7: Construct network (choose soft_power from plot)
+seurat_sub <- ConstructNetwork(
+  seurat_sub,
+  soft_power = 6,
+  setDatExpr = FALSE,
+  tom_name = 'haustorial',
+  overwrite_tom = TRUE
+)
+
+# Step 8: Module eigengenes
+seurat_sub <- ModuleEigengenes(seurat_sub)
+
+# Step 9: Module connectivity
+seurat_sub <- ModuleConnectivity(seurat_sub)
+
+# Get results
+modules <- GetModules(seurat_sub)
+MEs <- GetMEs(seurat_sub)
+
+# View
+head(modules)
+table(modules$module)
+```
+```{r}
+seurat_sub=hdWGCNA::ResetModuleNames(seurat_sub,new_name=paste0('Haustorial','-m'))
+pdf('~/Documents/scwgcna/haustorial3_1001/haustorial_kmes.pdf',width=8,height=6)
+hdWGCNA::PlotKMEs(seurat_sub, ncol = 2 )
+```
+
+```{r}
+submods=hdWGCNA::GetModules(seurat_sub)
+subhubs=hdWGCNA::GetHubGenes(seurat_sub)
+```
+
+```{r}
+seurat_sub=ModuleExprScore(seurat_sub,method='UCell')
+submodplotlist=ModuleFeaturePlot(
+  seurat_sub,
+  reduction = "umap",
+  features='hMEs', # plot the hMEs
+  order=TRUE, # order so the points with highest hMEs are on top
+  ucell = T, # depending on Seurat vs UCell for gene scoring
+  raster = F
+)
+submodplotwrap=wrap_plots(submodplotlist,ncol=2)
+pdf('~/Documents/scwgcna/haustorial3_1001/submodplotlist.pdf',width=8,height=8)
+submodplotwrap
+dev.off()
+```
+```{r}
+pdf('~/Documents/scwgcna/haustorial3_1001/haus_correlogram.pdf',width=8,height=8)
+hdWGCNA::ModuleCorrelogram(seurat_sub)
+dev.off()
+```
+
+```{r}
+seurat_sub=hdWGCNA::RunModuleUMAP(seurat_sub,min_dist=0.1)
+subumapdf=hdWGCNA::GetModuleUMAP(seurat_sub)
+subumapdf[1:3,]
+```
+```{r}
+submodule_cols <- setNames(unique(subumapdf$color), unique(subumapdf$color))  # if colors are actual color names
+# or if you have a mapping table: module_cols <- c(green="#00A087", red="#E64B35", ...)
+library(dplyr)
+ggplot(subumapdf, aes(x = UMAP1, y = UMAP2, color = color)) +  
+  geom_point(aes(size = kME), alpha = 0.8) +
+  ggrepel::geom_text_repel(
+    data = subumapdf %>% dplyr::group_by(color) %>% dplyr::slice_max(kME, n = 4),
+    aes(label = gene),
+    size = 3, box.padding = 0.5, point.padding = 0.4, force = 2.5,
+    segment.size = 0.2, segment.color = "grey40", show.legend = FALSE
+  ) +
+  scale_color_manual(values = submodule_cols, name = "Module") +  
+  scale_size(range = c(0.5, 3), guide = "none") +
+  hdWGCNA::umap_theme()
+ggsave('~/Documents/scwgcna/haustorial3_1001/haus_subumap_labelled_colored.pdf',height=10,width=10,dpi=300,limitsize=F)
+
+```
+```{r}
+module_colors <- GetModules(seurat_sub) %>%
+  distinct(module, color) %>%
+  deframe()
+
+ggplot(subumapdf, aes(x = UMAP1, y = UMAP2, color = module)) +  
+  geom_point(aes(size = kME), alpha = 0.8) +
+  geom_text_repel(
+    data = subumapdf %>% group_by(module) %>% slice_max(kME, n = 5),
+    aes(label = gene),color='black',
+    size = 3
+  ) +
+  scale_color_manual(values = module_colors, name = "Module") +  
+  scale_size(range = c(0.5, 3), guide = "none") +
+  hdWGCNA::umap_theme() +
+  theme(legend.position = "right")
+ggsave('~/Documents/scwgcna/haustorial3_1001/haus_subumap_labelled_black.pdf',height=10,width=10,dpi=300,limitsize=F)
+```
+
+```{r}
+ModuleNetworkPlot(seurat_sub,outdir="~/Documents/scwgcna/haustorial3_1001/subnetworks",vertex.label.cex=0.5,plott_size=c(12,10))
+```
+
+```{r}
+pdf('~/Documents/scwgcna/haustorial3_1001/subhubgenet.pdf',width=10,height=12)
+HubGeneNetworkPlot(seurat_sub,n_hubs=5,n_other=10,edge_prop=0.7,mods='all')
+```
+```{r}
+seurat_sub$RXLR_group <- ifelse(
+  seurat_sub$RXLR_count > 0,
+  "has_RXLR",
+  "no_RXLR")
+seurat_sub$RXLR_group <- factor(
+  seurat_sub$RXLR_group,
+  levels = c("no_RXLR", "has_RXLR"))
+table(seurat_sub$RXLR_group)
+```
+
+```{r}
+subcellr<- colnames(seurat_sub)[!is.na(seurat_sub$RXLR_group)]
+barcodes1 <- subcellr[seurat_sub$RXLR_group[subcellr] == "has_RXLR"]
+barcodes2 <- subcellr[seurat_sub$RXLR_group[subcellr] == "no_RXLR"]
+subdmes <- FindDMEs(
+  seurat_sub,
+  barcodes1=barcodes1,barcodes2=barcodes2,  test.use='wilcox',
+  group.by.vars = "RXLR_group",wgcna_name='haustorial',
+  assay = "SCT")
+subdmes
+```
+
+```{r}
+PlotDMEsLollipop(
+    seurat_sub, 
+    DMEs=subdmes, 
+    pvalue = "p_val_adj" ,wgcna_name='haustorial' )
+```
+
+```{r}
+all_tfs <- bind_rows(scan1_joined, scan2_joined, scan3_joined,
+                     scan4_joined, scan5_joined, scan6_joined) %>%
+  select(gene, TF_family = V1) %>% 
+  distinct()
+submods2=submods
+submods2$gene_name=gsub('-','_',submods$gene_name)
+submods2[1:3,]
+```
+```{r}
+subhubs2=subhubs
+subhubs2$gene=gsub('-','_',subhubs$gene)
+```
+
+```{r}
+sum(submods2$gene_name%in%all_tfs$gene)
+```
+
+```{r}
+library(dplyr)
+library(ComplexHeatmap)
+library(colorspace)
+library(circlize)
+library(grid)
+
+out_dir <- "~/Documents/scwgcna/haustorial3_1001/submods_tfbs_complexheatmap_inhubs_mapped"
+dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
+
+modules <- unique(subhubs2$module)
+
+for (mod in modules) {
+  message("Processing module: ", mod)
+  
+  # genes in this module
+  genes_mod <- subhubs2 %>%
+    filter(module == mod) %>%
+    pull(gene) %>%
+    unique()
+  
+  # intersect with columns of TF×gene matrix
+  genes_in_matrix <- intersect(colnames(reg_tf_sub), genes_mod)
+  
+  if (length(genes_in_matrix) < 2) {
+    message("  < 2 genes from module ", mod, " are in reg_tf_sub, skipping.")
+    next
+  }
+  
+  # subset matrix
+  reg_mod <- reg_tf_sub[, genes_in_matrix, drop = FALSE]
+  
+  # drop TFs with no hits
+  reg_mod <- reg_mod[rowSums(reg_mod) > 0, , drop = FALSE]
+  
+  if (nrow(reg_mod) == 0) {
+    message("  No TFs with hits for module ", mod, ", skipping.")
+    next
+  }
+  
+  ## ---- Row annotation: TF family ----
+  tf_ids <- rownames(reg_mod)
+  row_annot_df <- data.frame(
+    Family = tf_family$Family_Name[match(tf_ids, tf_family$TF_ID)],
+    row.names = tf_ids
+  )
+  row_annot_df$Family[is.na(row_annot_df$Family)] <- "Unknown"
+  
+  families <- sort(unique(row_annot_df$Family))
+  family_cols <- structure(
+    qualitative_hcl(length(families), palette = "Dark 3"),
+    names = families
+  )
+  
+  row_ha <- rowAnnotation(
+    Family = row_annot_df$Family,
+    col = list(Family = family_cols)
+  )
+  
+  ## ---- Column label colors from subhubs2$color ----
+  gene_color_map <- subhubs2 %>%
+    select(gene, color) %>%
+    distinct()
+  
+  gene_colors <- gene_color_map$color[match(colnames(reg_mod), gene_color_map$gene)]
+  gene_colors[is.na(gene_colors)] <- "grey50"
+  
+  ## ---- Heatmap color function ----
+  col_fun <- colorRamp2(
+    c(0, max(reg_mod)),
+    c("white", "darkred")
+  )
+  
+  ht <- Heatmap(
+    reg_mod,
+    name = "TFBS",
+    cluster_rows = TRUE,
+    cluster_columns = TRUE,
+    col = col_fun,
+    use_raster = FALSE,
+    column_names_gp = gpar(col = gene_colors, fontsize = 7),
+    row_names_gp = gpar(fontsize = 7),
+    right_annotation = row_ha
+  )
+  
+  # Clean filename
+  safe_mod <- gsub("[^A-Za-z0-9_-]+", "_", mod)
+  out_file <- file.path(out_dir, paste0("hub_", safe_mod, "_tfbs_complexheatmap.pdf"))
+  
+  pdf(out_file, width = 12, height = 8)
+  draw(ht)
+  grid.text(
+    paste("TFBS regulatory heatmap - hub genes - module", mod),
+    y = unit(1, "npc") - unit(0.5, "lines"),
+    gp = gpar(fontsize = 12, fontface = "bold")
+  )
+  dev.off()
+  
+  message("  Saved: ", out_file)
+}
+```
+```{r}
+library(colorspace)
+library(ComplexHeatmap)
+library(circlize)
+out_dir <- "~/Documents/scwgcna/haustorial3_1001/submods_tfbs_complexheatmap"
+dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
+
+modules <- unique(submods2$module)
+
+for (mod in modules) {
+  message("Processing module: ", mod)
+
+  # genes in this module
+  genes_mod <- submods2 %>%
+    filter(module == mod) %>%
+    pull(gene_name) %>%
+    unique()
+
+  # intersect with columns of TF×gene matrix
+  genes_in_matrix <- intersect(colnames(reg_tf_sub), genes_mod)
+
+  if (length(genes_in_matrix) < 2) {
+    message("  < 2 genes from module ", mod, " are in reg_tf_sub, skipping.")
+    next
+  }
+
+  # subset matrix
+  reg_mod <- reg_tf_sub[, genes_in_matrix, drop = FALSE]
+
+  # drop TFs with no hits
+  reg_mod <- reg_mod[rowSums(reg_mod) > 0, , drop = FALSE]
+  if (nrow(reg_mod) == 0) {
+    message("  No TFs with hits for module ", mod, ", skipping.")
+    next
+  }
+
+  ## ---- Row annotation: TF family ----
+  tf_ids <- rownames(reg_mod)
+
+  row_annot_df <- data.frame(
+    Family = tf_family$Family_Name[match(tf_ids, tf_family$TF_ID)],
+    row.names = tf_ids
+  )
+  row_annot_df$Family[is.na(row_annot_df$Family)] <- "Unknown"
+
+  families <- sort(unique(row_annot_df$Family))
+  family_cols <- structure(
+    qualitative_hcl(length(families), palette = "Dark 3"),
+    names = families
+  )
+
+  row_ha <- rowAnnotation(
+    Family = row_annot_df$Family,
+    col = list(Family = family_cols)
+  )
+
+  ## ---- Column label colors from hausmods$color ----
+  gene_color_map <- submods2 %>%
+    select(gene_name, color) %>%
+    distinct()
+
+  gene_colors <- gene_color_map$color[match(colnames(reg_mod), gene_color_map$gene_name)]
+  gene_colors[is.na(gene_colors)] <- "grey50"
+
+  ## ---- Heatmap color function ----
+  col_fun <- circlize::colorRamp2(
+    c(0, max(reg_mod)),
+    c("white", "darkred")
+  )
+
+  ht <- Heatmap(
+    reg_mod,
+    name = "TFBS",
+    cluster_rows = TRUE,
+    cluster_columns = TRUE,
+    col = col_fun,
+    use_raster = FALSE,  # avoid raster PNG/temp file issues
+    column_names_gp = gpar(col = gene_colors, fontsize = 7),
+    row_names_gp = gpar(fontsize = 7)
+  )
+
+  ht_list <- row_ha + ht
+
+  # clean filename
+  safe_mod <- gsub("[^A-Za-z0-9_-]+", "_", mod)
+  out_file <- file.path(out_dir, paste0("module_", safe_mod, "_tfbs_complexheatmap.pdf"))
+
+  pdf(out_file, width = 21, height = 9)
+  draw(ht_list)
+  grid.text(
+    paste("TFBS regulatory heatmap - module", mod),
+    y = unit(1, "npc") - unit(0.5, "lines"),
+    gp = gpar(fontsize = 14, fontface = "bold")
+  )
+  dev.off()
+
+  message("  Saved: ", out_file)
+}
+```
+```{r}
+
+library(purrr)
+
+Idents(seurat_sub)='seurat_clusters'
+
+clmarkers <- FindAllMarkers(
+  object = seurat_sub, 
+  min.pct = 0.2,
+  logfc.threshold = 1,
+  only.pos = FALSE
+)
+
+
+clmarkers_sig <- clmarkers %>% 
+  filter(p_val_adj < 0.05)
+
+clusters <- c(7, 11, 13)
+
+
+calculate_enrichment_log2FC <- function(cluster_num) {
+  cl_genes <- clmarkers_sig %>%
+    filter(cluster == !!cluster_num) %>%
+    pull(gene)
+  
+  submods %>%  
+    left_join(
+      clmarkers_sig %>%
+        filter(cluster == !!cluster_num) %>%
+        select(gene, avg_log2FC),
+      by = c("gene_name" = "gene")
+    ) %>%
+    mutate(is_marker = gene_name %in% cl_genes) %>%
+    group_by(module, color) %>%
+    summarise(
+      num_genes = sum(is_marker),
+      avg_log2FC = mean(avg_log2FC[is_marker], na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    mutate(cluster = as.character(cluster_num))  # Changed to character for consistency
+}
+
+
+enrichment_all_log2FC <- map_dfr(clusters, calculate_enrichment_log2FC)
+
+
+enrichment_all_log2FC <- enrichment_all_log2FC %>%
+  mutate(cluster = factor(cluster, levels = c("7", "11", "13")))  # Explicit levels
+
+# Plot
+ggplot(enrichment_all_log2FC[enrichment_all_log2FC$color!='grey',], aes(x = cluster, y = module, size = num_genes, color = avg_log2FC)) +
+  geom_point(alpha = 0.8) +
+  scale_size(range = c(2, 10), name = "Number of Genes",breaks=c(1,75,150,250)) +
+  scale_color_gradient2(
+    low = "slateblue",
+    mid = "gray",
+    high = "red",
+    midpoint = 0,
+    limits = c(-2, 2),
+    oob = scales::squish,
+    name = "Avg log2FC"
+  ) +
+  labs(
+    title = "Module Enrichment in Cluster Markers",
+    x = "Cluster",
+    y = "Module"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.y = element_text(size = 10),
+    legend.position = "right"
+  )
+
+
+ggsave('~/Documents/scwgcna/haustorial3_1001/submodule_dots_2clus_log2fc.pdf',width=5,height=6,dpi=300)
+```
+```{r}
+calculate_enrichment_log2FC <- function(cluster_num) {
+  cl_genes <- clmarkers_sig %>%
+    filter(cluster == !!cluster_num) %>%
+    pull(gene)
+
+  # Get detailed gene information for each module
+  detailed_results <- submods %>%
+    left_join(
+      clmarkers_sig %>%
+        filter(cluster == !!cluster_num) %>%
+        select(gene, avg_log2FC),
+      by = c("gene_name" = "gene")
+    ) %>%
+    mutate(is_marker = gene_name %in% cl_genes) %>%
+    mutate(cluster = as.character(cluster_num))
+
+  # Summarize for plotting
+  summary_results <- detailed_results %>%
+    group_by(module, color) %>%
+    summarise(
+      num_genes = sum(is_marker),
+      avg_log2FC = mean(avg_log2FC[is_marker], na.rm = TRUE),
+      .groups = "drop"
+    )
+
+  # Save detailed gene information for each module
+  output_dir <- "~/Documents/scwgcna/haustorial3_1001/gene_logFC"
+  if (!dir.exists(output_dir)) {
+    dir.create(output_dir, recursive = TRUE)
+  }
+
+  for (mod in unique(detailed_results$module)) {
+    mod_genes <- detailed_results %>%
+      filter(module == mod & is_marker) %>%
+      select(gene_name, avg_log2FC, cluster)
+
+    if (nrow(mod_genes) > 0) {
+      output_filename <- file.path(output_dir, paste0("haustorial-m", mod, "_cluster", cluster_num, "_genes_logFC.csv"))
+      write.csv(mod_genes, output_filename, row.names = FALSE)
+    }
+  }
+
+  return(summary_results)
+}
+
+
+# Plot
+
+
+# Save the aggregated results as well
+output_dir <- "~/Documents/scwgcna/haustorial3_1001/gene_logFC"
+if (!dir.exists(output_dir)) {
+  dir.create(output_dir, recursive = TRUE)
+}
+write.csv(enrichment_all_log2FC, file.path(output_dir, "enrichment_all_log2FC.csv"), row.names = FALSE)
+
+```
+
+
+
+```{r}
+submods2_with_effector <- submods2 %>%
+  mutate(
+    effector_type = ifelse(gene_name %in% pcaprx_df$gene, "RXLR", "non-RXLR")
+  )
+
+# Count the number of RXLR and non-RXLR genes for each color
+subeffector_counts_by_color <- submods2_with_effector %>%
+  count(color, effector_type) %>%
+  arrange(color, desc(n))
+subeffector_counts_long <- subeffector_counts_by_color %>%
+  pivot_longer(
+    cols = n,  # Pivot the count column
+    names_to = "count_type",
+    values_to = "count"
+  )
+
+ggplot(subeffector_counts_long, aes(x = effector_type, y = count, fill = color)) +
+  geom_col(position = position_dodge()) +
+  scale_fill_identity() +
+  labs(
+    title = "Binding Target Effector Classification by Color",
+    x = "Effector Type",
+    y = "Count"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none") 
+subrx_counts <- subeffector_counts_by_color %>%
+  group_by(color) %>%
+  mutate(total = sum(n))
+
+# Calculate the percentage for each effector_type within each color
+subpercentagerx_counts <- subrx_counts %>%
+  mutate(percentage = (n / total) * 100) %>%
+  select(color, effector_type, percentage)
+
+```
+```{r}
+process_module_effectors <- function(file_path, effector_df) {
+  
+  links <- read.csv(file_path)
+  
+  # Replace '-' with '_' in gene columns
+  links <- links %>%filter(weight>=0.05)%>%
+    mutate(
+      regulatoryGene = str_replace_all(regulatoryGene, "-", "_"),
+      targetGene = str_replace_all(targetGene, "-", "_")
+    )
+  
+  # Join with effector predictions for targetGene
+  links_with_effector <- links %>%
+    left_join(effector_df, by = c("targetGene" = "gene")) %>%
+    mutate(
+      effector_type = case_when(
+        is.na(Prediction) ~ "Not predicted",
+        str_detect(Prediction, "Non-effector") ~ "Non-effector",
+        str_detect(Prediction, "Cytoplasmic effector") ~ "Cytoplasmic effector",
+        str_detect(Prediction, "Apoplastic") ~ "Apoplastic effector",
+        str_detect(Prediction, "/apoplastic effector") ~ "Cytoplasmic/apoplastic effector",
+        TRUE ~ "Other"
+      )
+    )
+  
+  # Count effector types
+  effector_counts <- links_with_effector %>%
+    count(effector_type) %>%
+    arrange(desc(n))
+  
+  # Extract module number from filename
+  module <- str_extract(basename(file_path), "m[0-9]+")
+  
+  # Add module info
+  effector_counts <- effector_counts %>%
+    mutate(module = module) %>%
+    select(module, effector_type, n)
+  
+  return(list(
+    counts = effector_counts,
+    full_data = links_with_effector
+  ))
+}
+
+# Loop through all modules (m1 to m9)
+base_path <- "~/Documents/scwgcna/haustorial3_1001/geniesubs/"
+modules <- paste0("m", 1:4)
+
+# Store results
+all_counts <- list()
+all_data <- list()
+
+for (module in modules) {
+  file_path <- file.path(base_path, paste0("genie3_links_Haustorial-", module, ".csv"))
+  
+  if (file.exists(file_path)) {
+    cat("Processing", module, "...\n")
+    
+    result <- process_module_effectors(file_path, pcapeff)  # Replace hauseff with your effector df
+    
+    all_counts[[module]] <- result$counts
+    all_data[[module]] <- result$full_data
+    
+  } else {
+    cat("File not found:", file_path, "\n")
+  }
+}
+
+# Combine all counts
+combined_counts <- bind_rows(all_counts)
+
+# Print summary
+print(combined_counts)
+
+# Pivot to wide format for easier comparison
+counts_wide_thres005 <- combined_counts %>%
+  pivot_wider(
+    names_from = effector_type,
+    values_from = n,
+    values_fill = 0
+  )
+
+print(counts_wide_thres005)
+```
+
+```{r}
+counts_long_thres005 <- counts_wide_thres005 %>%
+  pivot_longer(
+    cols = -module,
+    names_to = "effector_type",
+    values_to = "count"
+  )
+
+# Stacked barplot
+ggplot(counts_long_thres005, aes(x = module, y = count, fill = effector_type)) +
+  geom_col() +
+  labs(title = "Binding Target Effector Classification",
+       x = "Module",
+       y = "Count",
+       fill = "Effector Classes") +
+  theme_minimal() +
+  theme(legend.position = "right")
+```
+
+
+```{r}
+write.csv(submods2,'~/Documents/scwgcna/haustorial3_1001/submods2.csv')
+```
+
+```{r}
+allrx_counts <- list()
+all_data <- list()
+
+for (module in modules) {
+  file_path <- file.path(base_path, paste0("genie3_links_Haustorial-", module, ".csv"))
+
+  if (file.exists(file_path)) {
+    cat("Processing", module, "...\n")
+
+    result <- process_module_effectors(file_path, pcaprx_df)
+
+    allrx_counts[[module]] <- result$counts  # Store in allrx_counts
+    all_data[[module]] <- result$full_data
+
+  } else {
+    cat("File not found:", file_path, "\n")
+  }
+}
+
+# Combine all counts
+combined_rxcounts <- bind_rows(allrx_counts)  # Use allrx_counts here
+
+# Print summary
+print(combined_rxcounts)
+
+# Pivot to wide format for easier comparison
+rxcounts_wide_thres005 <- combined_rxcounts %>%
+  pivot_wider(
+    names_from = effector_type,
+    values_from = n,
+    values_fill = 0
+  )
+
+# View the result
+print(rxcounts_wide_thres005)
+```
